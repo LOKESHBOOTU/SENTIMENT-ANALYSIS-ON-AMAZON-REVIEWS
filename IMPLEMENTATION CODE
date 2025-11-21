@@ -1,0 +1,279 @@
+# === Install (uncomment if needed) ===
+# !pip install -q transformers accelerate torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# !pip install -q scikit-learn pandas tqdm gradio
+
+# Mount Google Drive (run once in Colab)
+from google.colab import drive
+drive.mount('/content/drive', force_remount=False)
+
+# Drive folders (change if you want)
+DRIVE_BASE = "/content/drive/MyDrive/amazon_sentiment"   # base folder in Drive
+OUTPUT_DIR = DRIVE_BASE + "/saved_model_bert"            # where model+tokenizer are saved
+CACHE_DIR = DRIVE_BASE + "/cache"                        # optional cache folder
+
+import os
+os.makedirs(DRIVE_BASE, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+print("Drive mounted. OUTPUT_DIR =", OUTPUT_DIR)
+
+# === Imports & config ===
+import random, tempfile, shutil
+from typing import List
+import numpy as np
+import pandas as pd
+from tqdm.auto import tqdm
+import matplotlib
+matplotlib.use("Agg")  # for charts saving
+import matplotlib.pyplot as plt
+
+import torch
+from torch.utils.data import Dataset, DataLoader
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    get_linear_schedule_with_warmup
+)
+from torch.optim import AdamW
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report, confusion_matrix
+
+# ---------- Config (tweak as needed) ----------
+CSV_PATH = "/content/amazon_review_revised.csv"   # your uploaded CSV (update path)
+TEXT_COL = None      # auto-detect if None
+RATING_COL = None    # auto-detect if None
+
+MODEL_NAME = "bert-base-uncased"
+RANDOM_SEED = 42
+BINARY = True                      # binary sentiment
+MAX_LEN = 128
+
+BATCH_SIZE = 16                    # reduce if OOM
+EPOCHS = 4
+LR = 3e-5
+GRADIENT_ACCUMULATION_STEPS = 2
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+NUM_WORKERS = 2 if torch.cuda.is_available() else 0
+
+FORCE_TRAIN = False   # set True to retrain even if OUTPUT_DIR has a model
+
+# reproducibility
+def set_seed(seed: int = RANDOM_SEED):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+set_seed(RANDOM_SEED)
+print("Device:", DEVICE, "| Model:", MODEL_NAME, "| Batch size:", BATCH_SIZE, "| Epochs:", EPOCHS)
+
+# === Load CSV & auto-detect columns ===
+if not os.path.exists(CSV_PATH):
+    raise FileNotFoundError(f"CSV not found at {CSV_PATH}. Upload the file or change CSV_PATH.")
+
+raw_df = pd.read_csv(CSV_PATH)
+print("Columns found:", raw_df.columns.tolist())
+
+# Auto-detect text and rating columns
+if TEXT_COL is None:
+    for c in ["review_text", "review", "text", "reviewText", "content", "comments", "body", "title"]:
+        if c in raw_df.columns:
+            TEXT_COL = c
+            break
+if RATING_COL is None:
+    for c in ["rating", "stars", "star_rating", "score", "overall"]:
+        if c in raw_df.columns:
+            RATING_COL = c
+            break
+
+if TEXT_COL is None or RATING_COL is None:
+    raise KeyError("Could not auto-detect text or rating column. Set TEXT_COL and RATING_COL manually. Found columns: " + ", ".join(raw_df.columns))
+
+print("Using text column:", TEXT_COL)
+print("Using rating column:", RATING_COL)
+
+df = raw_df[[TEXT_COL, RATING_COL]].dropna().reset_index(drop=True)
+print("Total rows after dropna:", len(df))
+
+# Map ratings to labels
+def rating_to_label(r):
+    try:
+        rv = float(r)
+    except Exception:
+        s = str(r).strip().lower()
+        if s in ["positive", "pos", "p"]:
+            return 1
+        if s in ["negative", "neg", "n"]:
+            return 0
+        return 0
+    if BINARY:
+        return 1 if rv >= 4.0 else 0
+    else:
+        if rv <= 2.0:
+            return 0
+        elif rv == 3.0:
+            return 1
+        else:
+            return 2
+
+df["label"] = df[RATING_COL].apply(rating_to_label)
+df[TEXT_COL] = df[TEXT_COL].astype(str).str.strip()
+
+print("Label distribution:\n", df["label"].value_counts())
+
+# Train/val/test split with stratify when possible
+if len(df["label"].unique()) == 1:
+    raise ValueError("Only one label present after mapping — check rating mapping.")
+train_df, temp_df = train_test_split(df, test_size=0.2, stratify=df["label"], random_state=RANDOM_SEED)
+val_df, test_df = train_test_split(temp_df, test_size=0.5, stratify=temp_df["label"], random_state=RANDOM_SEED)
+
+print("Splits — Train:", len(train_df), "Val:", len(val_df), "Test:", len(test_df))
+test_cache_path = os.path.join(CACHE_DIR, "test_split.csv")
+test_df.to_csv(test_cache_path, index=False)
+print("Saved test split to:", test_cache_path)
+
+# === Dataset class ===
+class ReviewDataset(Dataset):
+    def __init__(self, texts: List[str], labels: List[int], tokenizer, max_len: int):
+        self.texts = texts
+        self.labels = labels
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, idx):
+        text = self.texts[idx]
+        label = int(self.labels[idx])
+        encoding = self.tokenizer(
+            text,
+            add_special_tokens=True,
+            truncation=True,
+            max_length=self.max_len,
+            padding="max_length",
+            return_attention_mask=True,
+            return_tensors="pt",
+        )
+        item = {k: v.squeeze(0) for k, v in encoding.items()}
+        item["labels"] = torch.tensor(label, dtype=torch.long)
+        return item
+
+# Tokenizer
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True)
+
+train_dataset = ReviewDataset(train_df[TEXT_COL].tolist(), train_df["label"].tolist(), tokenizer, MAX_LEN)
+val_dataset   = ReviewDataset(val_df[TEXT_COL].tolist(),   val_df["label"].tolist(),   tokenizer, MAX_LEN)
+test_dataset  = ReviewDataset(test_df[TEXT_COL].tolist(),  test_df["label"].tolist(),  tokenizer, MAX_LEN)
+
+# DataLoaders: set pin_memory only if using CUDA
+pin_memory_flag = True if (torch.cuda.is_available()) else False
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=pin_memory_flag)
+val_loader   = DataLoader(val_dataset,   batch_size=BATCH_SIZE, num_workers=NUM_WORKERS, pin_memory=pin_memory_flag)
+test_loader  = DataLoader(test_dataset,  batch_size=BATCH_SIZE, num_workers=NUM_WORKERS, pin_memory=pin_memory_flag)
+
+# Drive helper functions
+def drive_model_exists(path):
+    return os.path.exists(os.path.join(path, "config.json")) and (
+        os.path.exists(os.path.join(path, "pytorch_model.bin")) or os.path.exists(os.path.join(path, "tf_model.h5"))
+    )
+
+def save_model_to_drive(model_obj, tokenizer_obj, drive_path=OUTPUT_DIR):
+    tokenizer_obj.save_pretrained(drive_path)
+    model_obj.save_pretrained(drive_path)
+    print("Saved model & tokenizer to Drive at:", drive_path)
+
+# === Train or load logic ===
+num_labels = 2 if BINARY else 3
+
+if (not FORCE_TRAIN) and drive_model_exists(OUTPUT_DIR):
+    print("Found saved model in Drive. Loading from", OUTPUT_DIR)
+    infer_tokenizer = AutoTokenizer.from_pretrained(OUTPUT_DIR)
+    infer_model = AutoModelForSequenceClassification.from_pretrained(OUTPUT_DIR).to(DEVICE)
+    infer_model.eval()
+else:
+    print("Training BERT from scratch (or forced) — may take time depending on dataset/GPU.")
+    model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME, num_labels=num_labels).to(DEVICE)
+    optimizer = AdamW(model.parameters(), lr=LR)
+    total_steps = max(1, (len(train_loader) // GRADIENT_ACCUMULATION_STEPS) * EPOCHS)
+    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=int(0.1 * total_steps), num_training_steps=total_steps)
+    scaler = torch.cuda.amp.GradScaler() if torch.cuda.is_available() else None
+
+    best_val_f1 = 0.0
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    for epoch in range(1, EPOCHS + 1):
+        model.train()
+        running_loss = 0.0
+        optimizer.zero_grad()
+        pbar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoch {epoch}/{EPOCHS} (train)")
+        for step, batch in pbar:
+            input_ids = batch["input_ids"].to(DEVICE, non_blocking=True)
+            attention_mask = batch["attention_mask"].to(DEVICE, non_blocking=True)
+            labels = batch["labels"].to(DEVICE, non_blocking=True)
+
+            if torch.cuda.is_available():
+                with torch.cuda.amp.autocast():
+                    outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                    loss = outputs.loss / GRADIENT_ACCUMULATION_STEPS
+                scaler.scale(loss).backward()
+            else:
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                loss = outputs.loss / GRADIENT_ACCUMULATION_STEPS
+                loss.backward()
+
+            if (step + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
+                if torch.cuda.is_available():
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
+                optimizer.zero_grad()
+                scheduler.step()
+
+            running_loss += loss.item() * GRADIENT_ACCUMULATION_STEPS
+            pbar.set_postfix({"loss": f"{running_loss / (step+1):.4f}"})
+
+        # Validation
+        model.eval()
+        preds = []
+        true = []
+        val_loss = 0.0
+        with torch.no_grad():
+            for vb in tqdm(val_loader, desc=f"Epoch {epoch}/{EPOCHS} (val)"):
+                ids = vb["input_ids"].to(DEVICE, non_blocking=True)
+                masks = vb["attention_mask"].to(DEVICE, non_blocking=True)
+                labels_v = vb["labels"].to(DEVICE, non_blocking=True)
+                if torch.cuda.is_available():
+                    with torch.cuda.amp.autocast():
+                        out = model(input_ids=ids, attention_mask=masks, labels=labels_v)
+                        loss_v = out.loss
+                        logits = out.logits
+                else:
+                    out = model(input_ids=ids, attention_mask=masks, labels=labels_v)
+                    loss_v = out.loss
+                    logits = out.logits
+
+                val_loss += loss_v.item()
+                batch_preds = torch.argmax(logits, dim=1).cpu().numpy()
+                preds.extend(batch_preds.tolist())
+                true.extend(labels_v.cpu().numpy().tolist())
+
+        avg_val_loss = val_loss / max(1, len(val_loader))
+        acc = accuracy_score(true, preds)
+        prec, recall, f1, _ = precision_recall_fscore_support(true, preds, average="weighted", zero_division=0)
+        print(f"Epoch {epoch} -> val_loss: {avg_val_loss:.4f} | val_acc: {acc:.4f} | val_f1: {f1:.4f}")
+
+        if f1 > best_val_f1:
+            best_val_f1 = f1
+            print("New best val F1:", best_val_f1, "- saving model to Drive.")
+            save_model_to_drive(model, tokenizer, drive_path=OUTPUT_DIR)
+
+    # After training, load saved model for inference
+    infer_tokenizer = AutoTokenizer.from_pretrained(OUTPUT_DIR)
+    infer_model = AutoModelForSequenceClassification.from_pretrained(OUTPUT_DIR).to(DEVICE)
+    infer_model.eval()
+    print("Training complete and model loaded for inference.")
