@@ -179,6 +179,12 @@ The app accepts a review and predicts sentiment instantly using saved model arti
 
 The interface compares the RoBERTa prediction with the traditional ML models so users can see how different approaches respond to the same review.
 
+### Training And Validation Curves
+
+The project also saves RoBERTa training history, including epoch-wise training and validation loss and accuracy curves for analysis and reporting.
+
+![Training and validation curves](README_assets/training_validation_curves.png)
+
 ## 🚀 Features
 
 - Detect sentiment instantly from review text
