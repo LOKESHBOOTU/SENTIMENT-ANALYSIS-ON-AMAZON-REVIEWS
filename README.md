@@ -1,213 +1,236 @@
-# Sentiment Analysis on Product Reviews
+# Sentiment Analysis on Product Reviews using Machine Learning and RoBERTa
 
-This project delivers a production-ready, resume-level NLP workflow for classifying product reviews into `negative`, `neutral`, and `positive` sentiment classes. It combines strong traditional ML baselines with a fine-tuned `roberta-base` transformer, adds imbalance handling, exports analysis visuals, and includes a Streamlit app for deployment-ready inference.
+## 📖 Description
 
-## Live Demo
+This project classifies product reviews into **positive**, **neutral**, or **negative** sentiment by analyzing review text with both traditional machine learning models and a transformer-based model. It combines a reproducible preprocessing and training pipeline, saved model artifacts, evaluation reports, and a Streamlit interface for interactive prediction.
 
-This repository is prepared for a lightweight Streamlit live demo using the saved Logistic Regression model artifact committed to the repo. That keeps deployment fast and avoids retraining in the cloud.
+Sentiment analysis is a widely used real-world NLP task because customer reviews strongly influence purchase decisions, brand perception, and business strategy. A system like this helps turn raw review text into actionable insight by automatically identifying the underlying sentiment.
 
-After connecting the GitHub repository to Streamlit Community Cloud, set the entry point to:
+## What Is Sentiment Analysis
 
-```text
-app.py
-```
+Sentiment analysis is the process of identifying the emotional tone of text. In Natural Language Processing, this is treated as a text classification problem where the model learns patterns from labeled examples and predicts whether a new review is **positive**, **neutral**, or **negative**.
 
-The deployed app can compare the saved ML models directly from the repo. RoBERTa remains the primary local model when its fine-tuned files are available, but its current weights are too large for a lightweight GitHub-hosted demo and are therefore treated as an optional heavier deployment artifact.
+In this project, sentiment labels are created directly from product ratings:
 
-## Label Mapping
+- `1–2` = Negative
+- `3` = Neutral
+- `4–5` = Positive
 
-- `1-2 -> negative`
-- `3 -> neutral`
-- `4-5 -> positive`
+## How It Works
+
+1. The user enters a product review in the app.
+2. The review text is cleaned and normalized.
+3. The saved RoBERTa model is used as the primary predictor when available.
+4. Traditional ML baselines also run on the same text for comparison.
+5. The app displays the main prediction, confidence score, class probabilities, and live model comparison.
+
+## 🎯 Objectives
+
+- Classify reviews into negative, neutral, and positive sentiment
+- Compare traditional ML models with a transformer-based model
+- Build a clean and reproducible NLP pipeline
+- Save model artifacts so predictions can be made without retraining
+- Provide an interactive interface for real-time sentiment prediction
+
+## 🧠 Technologies Used
+
+- Python
+- Scikit-learn
+- Pandas
+- NumPy
+- Matplotlib
+- Seaborn
+- Streamlit
+- Hugging Face Transformers
+- PyTorch
+- Joblib
+
+## 📂 Dataset Information
+
+- Dataset used: `reviews.csv`
+- Main features:
+  - `body`
+  - `rating`
+  - optional metadata such as `title_x`, `brand`, and `verified`
+- Label creation rule:
+  - `1–2` = Negative
+  - `3` = Neutral
+  - `4–5` = Positive
+
+The dataset in this repository contains Amazon-style product reviews. The preprocessing pipeline combines review title and review body where available so the model can learn from both short titles and detailed review text.
 
 ## Project Structure
 
 ```text
 Sentiment Analysis on Amazon reviews/
-├── app.py
-├── reviews.csv
-├── requirements.txt
-├── README.md
-├── data/
-│   └── processed/
-├── models/
-├── notebooks/
-├── outputs/
-│   ├── figures/
-│   └── reports/
-└── src/
-    ├── __init__.py
-    ├── config.py
-    ├── eda.py
-    ├── evaluate.py
-    ├── inference.py
-    ├── preprocessing.py
-    ├── train_ml.py
-    ├── train_roberta.py
-    └── utils.py
+|-- app.py
+|-- data/
+|   `-- processed/
+|-- models/
+|-- notebooks/
+|-- outputs/
+|   |-- figures/
+|   `-- reports/
+|-- requirements.txt
+|-- reviews.csv
+`-- src/
+    |-- config.py
+    |-- eda.py
+    |-- evaluate.py
+    |-- inference.py
+    |-- preprocessing.py
+    |-- train_ml.py
+    |-- train_roberta.py
+    `-- utils.py
 ```
 
-## Features
+## Requirements
 
-- Robust preprocessing with missing-value handling, text cleaning, token filtering, and stratified splitting
-- EDA outputs including class balance, review-length histograms, frequent-word charts, and sentiment-wise word clouds
-- Traditional baseline models:
-  - Logistic Regression
-  - Complement Naive Bayes
-  - Linear SVM
-- Transformer model:
-  - Fine-tuned `roberta-base`
-- Hyperparameter tuning:
-  - `GridSearchCV` for TF-IDF models
-  - learning-rate, batch-size, and epoch sweeps for RoBERTa
-- Imbalance handling:
-  - class weights for Logistic Regression and Linear SVM
-  - class-weighted cross-entropy for RoBERTa
-- Evaluation:
-  - Accuracy
-  - Precision
-  - Recall
-  - F1-score
-  - Confusion matrices
-  - model comparison bar charts
+- Python 3.10 or later
+- pip
 
-## Dataset Assumptions
+## ⚙️ Installation & Setup
 
-The current repository already contains `reviews.csv` with the following relevant columns:
-
-- `body`
-- `rating`
-- `title_x`
-- `brand`
-- `verified`
-
-The preprocessing step combines `title_x` and `body` when possible so short titles can enrich the review representation.
-
-## Setup
-
-Create a virtual environment and install dependencies:
-
-```powershell
+```bash
+git clone https://github.com/LOKESHBOOTU/SENTIMENT-ANALYSIS-ON-AMAZON-REVIEWS.git
+cd SENTIMENT-ANALYSIS-ON-AMAZON-REVIEWS
 python -m venv .venv
-.venv\Scripts\Activate.ps1
+.venv\Scripts\activate
 pip install -r requirements.txt
+python -m streamlit run app.py
 ```
 
-If Windows or OneDrive locks files inside `.venv`, a reliable fallback is to install packages into a local folder and prepend it to `PYTHONPATH`:
+If Windows or OneDrive locks files inside `.venv`, you can use the local package-folder fallback:
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install --target .python_packages -r requirements.txt
 $env:PYTHONPATH = (Resolve-Path .python_packages).Path
+python -m streamlit run app.py
 ```
 
-## Run Instructions
+## 🔍 Methodology / Workflow
 
-### 1. Preprocess the data
+1. **Data Collection**  
+   The project uses a product review dataset with review text and star ratings.
 
-```powershell
-python -m src.preprocessing
-```
+2. **Label Creation**  
+   Ratings are mapped into three sentiment classes:
+   - `1–2` → Negative
+   - `3` → Neutral
+   - `4–5` → Positive
 
-Artifacts created:
+3. **Data Cleaning**  
+   Missing values are handled and incomplete rows are removed before training.
 
-- `data/processed/train.csv`
-- `data/processed/validation.csv`
-- `data/processed/test.csv`
-- `data/processed/metadata.json`
+4. **Text Preprocessing**  
+   Text is lowercased, punctuation is removed, stopwords are filtered, and normalized text is saved for downstream modeling.
 
-### 2. Generate EDA
+5. **Feature Extraction**  
+   TF-IDF vectorization is used for machine learning models, while tokenization with `roberta-base` is used for transformer training.
 
-```powershell
-python -m src.eda
-```
+6. **Model Training**  
+   Multiple classical ML models are trained and compared, followed by fine-tuning of RoBERTa for sequence classification.
 
-Artifacts created in `outputs/figures/`:
+7. **Model Evaluation**  
+   Accuracy, precision, recall, F1-score, confusion matrices, and comparison charts are used to measure performance.
 
-- class distribution plot
-- review length distribution
-- top words per sentiment
-- word clouds per sentiment
+8. **Prediction**  
+   Saved model artifacts are loaded by the Streamlit app, so the system can make predictions without retraining every time.
 
-### 3. Train traditional ML models
+## 🤖 Models Used
 
-```powershell
-python -m src.train_ml
-```
+### Traditional Machine Learning Models
 
-By default, this reuses saved model artifacts if they already exist. To retrain from scratch:
+- Logistic Regression
+- Naive Bayes
+- Support Vector Machine (SVM)
 
-```powershell
-python -m src.train_ml --force-retrain
-```
+### Transformer Model
 
-Outputs:
+- RoBERTa (`roberta-base`)
 
-- trained pipelines under `models/ml/`
-- confusion matrices in `outputs/figures/`
-- grid-search summary in `outputs/reports/ml_grid_search_summary.json`
-- comparison table in `outputs/reports/ml_model_comparison.csv`
-- combined comparison table in `outputs/reports/all_model_comparison.csv` after RoBERTa training
+RoBERTa is used as the **primary prediction model** when the saved transformer artifact is available locally, while the ML models are displayed alongside it for comparison.
 
-### 4. Fine-tune RoBERTa
+## 📊 Results / Accuracy
 
-```powershell
-python -m src.train_roberta
-```
+Latest saved model metrics from the held-out evaluation run:
 
-By default, this reuses saved RoBERTa trials and test metrics if matching artifacts already exist. To force a fresh run:
+| Model | Accuracy | Precision | Recall | F1-score |
+| --- | ---: | ---: | ---: | ---: |
+| Logistic Regression | 0.8792 | 0.8945 | 0.8792 | 0.8857 |
+| Naive Bayes | 0.8784 | 0.8809 | 0.8784 | 0.8597 |
+| SVM | 0.8966 | 0.8921 | 0.8966 | 0.8937 |
+| RoBERTa | 0.8867 | 0.8670 | 0.8867 | 0.8742 |
 
-```powershell
-python -m src.train_roberta --force-retrain
-```
+**Best-performing classical model:** SVM  
+**Main app model:** RoBERTa when available locally
 
-Example with explicit tuning options:
+## 📸 Screenshots / Output
 
-```powershell
-python -m src.train_roberta --learning-rates 2e-5 3e-5 --batch-sizes 8 16 --epochs 2 3
-```
+The project includes a Streamlit interface for entering product reviews, viewing predictions, confidence scores, class probabilities, and live comparison across saved models.
 
-Outputs:
+### Main Interface
 
-- fine-tuned models under `models/roberta/`
-- reusable saved models so inference does not require retraining
-- trial leaderboard in `outputs/reports/roberta_trials.csv`
-- summary in `outputs/reports/roberta_summary.json`
-- confusion matrix in `outputs/figures/roberta_confusion_matrix.png`
-- training history in `models/roberta/<trial>/trainer_log_history.csv`
-- epoch-wise train/validation metrics in `models/roberta/<trial>/epoch_metrics.csv`
-- train vs validation loss/accuracy curves in `models/roberta/<trial>/training_validation_curves.png`
+The app accepts a review and predicts sentiment instantly using saved model artifacts.
 
-### 5. Launch the Streamlit app
+### Live Model Comparison
 
-```powershell
-streamlit run app.py
-```
+The interface compares the RoBERTa prediction with the traditional ML models so users can see how different approaches respond to the same review.
 
-## Deployment Notes
+## 🚀 Features
 
-The Streamlit UI supports:
+- Detect sentiment instantly from review text
+- Compare ML models and RoBERTa on the same input
+- Interactive web interface for prediction
+- Saved trained artifacts so the app does not retrain on every run
+- EDA plots, confusion matrices, and comparison reports
+- Training and validation loss/accuracy curves for RoBERTa
+- Deployment-ready project structure for local demos and portfolio presentation
 
-- free-text review input
-- model selection between RoBERTa and Logistic Regression
-- predicted sentiment output
-- confidence score
-- per-class probability display
-- loading previously saved model artifacts without retraining
+## Applications
 
-For simple cloud deployment, the committed Logistic Regression artifact is the recommended demo model because it is lightweight and starts quickly.
+- Understanding customer feedback at scale
+- Monitoring sentiment for e-commerce products
+- Demonstrating NLP text classification in academic projects
+- Comparing classical ML and transformer approaches on review data
+- Building portfolio-ready machine learning web apps
 
-## Reproducibility
+## Why This Project Is Useful
 
-- Shared random seed in `src/config.py`
-- Centralized label mappings
-- Saved metrics and model artifacts
-- Deterministic split strategy
+- Helps users understand how sentiment classification works in practice
+- Saves time by giving quick insight from large volumes of reviews
+- Shows a complete workflow from preprocessing to training to deployment
+- Useful for students, researchers, and beginners learning NLP and ML deployment
 
-## Suggested Future Enhancements
+## ⚠️ Limitations
 
-- Add SHAP or LIME for explainability
-- Serve the best model through FastAPI
-- Add unit tests and CI
-- Track experiments with MLflow
+- Performance depends heavily on dataset quality and label assumptions
+- The current RoBERTa benchmark was constrained by local hardware and deployment practicality
+- The model may struggle with sarcasm, mixed sentiment, or unseen review styles
+- It is a text classifier, not a complete customer-intelligence system
+- The deployed lightweight demo may rely on saved ML models when large RoBERTa weights are not hosted remotely
+
+## 🔮 Future Improvements
+
+- Add hosted transformer weights so the live cloud demo can use RoBERTa directly
+- Extend comparison with more models such as XGBoost or DistilBERT
+- Add SHAP or LIME explanations for interpretability
+- Improve UI polish and deployment automation
+- Add automated retraining and experiment tracking
+
+## 👨‍💻 Author / Contributors
+
+- **Lokesh Bootu**
+- GitHub: [LOKESHBOOTU](https://github.com/LOKESHBOOTU)
+
+## 📄 License
+
+No license file has been added yet.
+
+If you want to open-source this project properly, adding an **MIT License** would be a good next step.
+
+## Deployment
+
+This project can be run locally using the saved model artifacts and is structured to support lightweight Streamlit deployment. The ML artifacts are small enough for simple demo hosting, while RoBERTa can be used as the main model in local environments where its saved weights are available.
