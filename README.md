@@ -12,7 +12,7 @@ After connecting the GitHub repository to Streamlit Community Cloud, set the ent
 app.py
 ```
 
-The deployed app will use the saved Logistic Regression model by default. RoBERTa remains optional for local or heavier deployments where its model files are available.
+The deployed app can compare the saved ML models directly from the repo. RoBERTa remains the primary local model when its fine-tuned files are available, but its current weights are too large for a lightweight GitHub-hosted demo and are therefore treated as an optional heavier deployment artifact.
 
 ## Label Mapping
 

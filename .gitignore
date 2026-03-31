@@ -15,6 +15,12 @@ models/ml/*
 !models/ml/logistic_regression/
 !models/ml/logistic_regression/pipeline.joblib
 !models/ml/logistic_regression/metrics.json
+!models/ml/naive_bayes/
+!models/ml/naive_bayes/pipeline.joblib
+!models/ml/naive_bayes/metrics.json
+!models/ml/svm/
+!models/ml/svm/pipeline.joblib
+!models/ml/svm/metrics.json
 !outputs/
 outputs/*
 !outputs/reports/
