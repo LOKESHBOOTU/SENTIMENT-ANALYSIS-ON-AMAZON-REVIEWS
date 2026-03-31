@@ -8,3 +8,16 @@ streamlit.err.log
 data/processed/
 models/
 outputs/
+!models/
+models/*
+!models/ml/
+models/ml/*
+!models/ml/logistic_regression/
+!models/ml/logistic_regression/pipeline.joblib
+!models/ml/logistic_regression/metrics.json
+!outputs/
+outputs/*
+!outputs/reports/
+outputs/reports/*
+!outputs/reports/ml_model_comparison.csv
+!outputs/reports/all_model_comparison.csv

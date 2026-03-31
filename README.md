@@ -2,6 +2,18 @@
 
 This project delivers a production-ready, resume-level NLP workflow for classifying product reviews into `negative`, `neutral`, and `positive` sentiment classes. It combines strong traditional ML baselines with a fine-tuned `roberta-base` transformer, adds imbalance handling, exports analysis visuals, and includes a Streamlit app for deployment-ready inference.
 
+## Live Demo
+
+This repository is prepared for a lightweight Streamlit live demo using the saved Logistic Regression model artifact committed to the repo. That keeps deployment fast and avoids retraining in the cloud.
+
+After connecting the GitHub repository to Streamlit Community Cloud, set the entry point to:
+
+```text
+app.py
+```
+
+The deployed app will use the saved Logistic Regression model by default. RoBERTa remains optional for local or heavier deployments where its model files are available.
+
 ## Label Mapping
 
 - `1-2 -> negative`
@@ -183,6 +195,8 @@ The Streamlit UI supports:
 - confidence score
 - per-class probability display
 - loading previously saved model artifacts without retraining
+
+For simple cloud deployment, the committed Logistic Regression artifact is the recommended demo model because it is lightweight and starts quickly.
 
 ## Reproducibility
 

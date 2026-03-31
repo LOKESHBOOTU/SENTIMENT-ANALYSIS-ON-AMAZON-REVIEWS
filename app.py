@@ -25,11 +25,32 @@ def load_inference_model(model_type: str):
     return MLInferencePipeline(model_path)
 
 
+def get_available_models() -> list[str]:
+    available_models = []
+    logistic_model_path = MODELS_DIR / "ml" / "logistic_regression" / "pipeline.joblib"
+    if logistic_model_path.exists():
+        available_models.append("Logistic Regression")
+
+    roberta_summary = MODELS_DIR.parent / "outputs" / "reports" / "roberta_summary.json"
+    if roberta_summary.exists():
+        available_models.append("RoBERTa")
+
+    return available_models
+
+
 def main() -> None:
     st.title("Sentiment Analysis on Product Reviews")
-    st.caption("Interactive inference with traditional ML and transformer sentiment models.")
+    st.caption("Interactive inference with saved production-ready sentiment models.")
 
-    model_type = st.selectbox("Inference model", ["RoBERTa", "Logistic Regression"])
+    available_models = get_available_models()
+    if not available_models:
+        st.error("No saved model artifacts were found. Add a trained model under the models directory before deployment.")
+        return
+
+    if "Logistic Regression" in available_models and "RoBERTa" not in available_models:
+        st.info("Live demo mode is using the saved Logistic Regression model for fast cloud inference.")
+
+    model_type = st.selectbox("Inference model", available_models)
     review_text = st.text_area(
         "Enter a product review",
         height=180,
