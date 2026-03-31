@@ -1,3 +1,6 @@
+[global]
+developmentMode = false
+
 [theme]
 base = "light"
 primaryColor = "#0F766E"
@@ -7,4 +10,3 @@ textColor = "#102A43"
 
 [server]
 headless = true
-
