@@ -1,0 +1,10 @@
+.venv/
+.python_packages/
+__pycache__/
+*.pyc
+streamlit.out.log
+streamlit.err.log
+.DS_Store
+data/processed/
+models/
+outputs/
