@@ -12,11 +12,13 @@ import torch
 from datasets import Dataset
 import matplotlib.pyplot as plt
 import seaborn as sns
+import psutil
 from sklearn.utils.class_weight import compute_class_weight
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
     DataCollatorWithPadding,
+    EarlyStoppingCallback,
     EvalPrediction,
     Trainer,
     TrainerCallback,
@@ -43,6 +45,16 @@ class TrialConfig:
     learning_rate: float
     batch_size: int
     epochs: int
+    weight_decay: float
+    gradient_accumulation_steps: int
+
+
+@dataclass(frozen=True)
+class HardwareProfile:
+    has_gpu: bool
+    cpu_logical: int
+    ram_total_gb: float
+    ram_available_gb: float
 
 
 class WeightedLossTrainer(Trainer):
@@ -90,6 +102,50 @@ class TrainMetricsCallback(TrainerCallback):
         return control
 
 
+def detect_hardware_profile() -> HardwareProfile:
+    memory = psutil.virtual_memory()
+    return HardwareProfile(
+        has_gpu=torch.cuda.is_available(),
+        cpu_logical=psutil.cpu_count(logical=True) or 1,
+        ram_total_gb=round(memory.total / (1024**3), 2),
+        ram_available_gb=round(memory.available / (1024**3), 2),
+    )
+
+
+def choose_default_search_space(profile: HardwareProfile) -> dict[str, list | int]:
+    if profile.has_gpu:
+        return {
+            "max_length": 256,
+            "learning_rates": [2e-5, 3e-5, 5e-5],
+            "batch_sizes": [16, 32],
+            "epochs": [3, 4, 5],
+            "weight_decays": [0.01],
+            "gradient_accumulation_steps": [1, 2],
+            "dataloader_num_workers": min(4, max(1, profile.cpu_logical // 4)),
+        }
+
+    if profile.ram_available_gb < 5:
+        return {
+            "max_length": 128,
+            "learning_rates": [2e-5, 3e-5],
+            "batch_sizes": [4],
+            "epochs": [3],
+            "weight_decays": [0.01],
+            "gradient_accumulation_steps": [4],
+            "dataloader_num_workers": 0,
+        }
+
+    return {
+        "max_length": 128,
+        "learning_rates": [2e-5, 3e-5],
+        "batch_sizes": [8],
+        "epochs": [3, 4],
+        "weight_decays": [0.01],
+        "gradient_accumulation_steps": [2, 4],
+        "dataloader_num_workers": max(1, min(2, profile.cpu_logical // 6)),
+    }
+
+
 def load_splits() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     return (
         pd.read_csv(PROCESSED_DIR / "train.csv"),
@@ -114,19 +170,25 @@ def sample_split(df: pd.DataFrame, max_samples: int | None) -> pd.DataFrame:
     return pd.concat(samples, ignore_index=True).sample(frac=1.0, random_state=SEED).reset_index(drop=True)
 
 
-def build_training_arguments(trial_output_dir: Path, trial: TrialConfig):
+def build_training_arguments(trial_output_dir: Path, trial: TrialConfig, dataloader_num_workers: int):
     kwargs = {
         "output_dir": str(trial_output_dir / "checkpoints"),
         "learning_rate": trial.learning_rate,
         "per_device_train_batch_size": trial.batch_size,
         "per_device_eval_batch_size": trial.batch_size,
         "num_train_epochs": trial.epochs,
+        "gradient_accumulation_steps": trial.gradient_accumulation_steps,
+        "weight_decay": trial.weight_decay,
+        "warmup_ratio": 0.1,
         "save_strategy": "epoch",
         "logging_strategy": "steps",
         "logging_steps": 50,
         "load_best_model_at_end": True,
         "metric_for_best_model": "f1_score",
         "greater_is_better": True,
+        "save_total_limit": 2,
+        "dataloader_num_workers": dataloader_num_workers,
+        "dataloader_pin_memory": torch.cuda.is_available(),
         "seed": SEED,
         "fp16": torch.cuda.is_available(),
         "report_to": "none",
@@ -213,7 +275,10 @@ def save_training_curves(log_history: list[dict], output_dir: Path) -> None:
 
 
 def trial_output_path(trial: TrialConfig) -> Path:
-    return MODELS_DIR / "roberta" / f"lr_{trial.learning_rate}_bs_{trial.batch_size}_ep_{trial.epochs}"
+    return MODELS_DIR / "roberta" / (
+        f"lr_{trial.learning_rate}_bs_{trial.batch_size}_ep_{trial.epochs}"
+        f"_wd_{trial.weight_decay}_ga_{trial.gradient_accumulation_steps}"
+    )
 
 
 def load_saved_trial_result(trial: TrialConfig) -> dict[str, float | str] | None:
@@ -233,6 +298,8 @@ def run_trial(
     validation_dataset: Dataset,
     class_weights: torch.Tensor,
     max_length: int,
+    early_stopping_patience: int,
+    dataloader_num_workers: int,
 ) -> tuple[dict[str, float], Path]:
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     train_tokenized = tokenize_dataset(train_dataset, tokenizer, max_length=max_length)
@@ -245,7 +312,7 @@ def run_trial(
     )
 
     trial_output_dir = trial_output_path(trial)
-    training_args = build_training_arguments(trial_output_dir, trial)
+    training_args = build_training_arguments(trial_output_dir, trial, dataloader_num_workers=dataloader_num_workers)
     train_metrics_callback = TrainMetricsCallback(train_tokenized)
 
     trainer = WeightedLossTrainer(
@@ -257,7 +324,7 @@ def run_trial(
         processing_class=tokenizer,
         data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
         compute_metrics=hf_compute_metrics,
-        callbacks=[train_metrics_callback],
+        callbacks=[train_metrics_callback, EarlyStoppingCallback(early_stopping_patience=early_stopping_patience)],
     )
     train_metrics_callback.attach(trainer)
     trainer.train()
@@ -309,10 +376,14 @@ def load_saved_test_metrics(model_dir: Path) -> dict[str, float] | None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fine-tune RoBERTa for sentiment classification.")
-    parser.add_argument("--max-length", type=int, default=256)
-    parser.add_argument("--learning-rates", nargs="+", type=float, default=[2e-5, 3e-5])
-    parser.add_argument("--batch-sizes", nargs="+", type=int, default=[8, 16])
-    parser.add_argument("--epochs", nargs="+", type=int, default=[2, 3])
+    parser.add_argument("--max-length", type=int, default=None)
+    parser.add_argument("--learning-rates", nargs="+", type=float, default=None)
+    parser.add_argument("--batch-sizes", nargs="+", type=int, default=None)
+    parser.add_argument("--epochs", nargs="+", type=int, default=None)
+    parser.add_argument("--weight-decays", nargs="+", type=float, default=None)
+    parser.add_argument("--gradient-accumulation-steps", nargs="+", type=int, default=None)
+    parser.add_argument("--early-stopping-patience", type=int, default=2)
+    parser.add_argument("--dataloader-num-workers", type=int, default=None)
     parser.add_argument("--max-train-samples", type=int, default=None)
     parser.add_argument("--max-validation-samples", type=int, default=None)
     parser.add_argument("--max-test-samples", type=int, default=None)
@@ -324,6 +395,46 @@ def main() -> None:
     set_seed(SEED)
     ensure_directories()
     args = parse_args()
+    hardware_profile = detect_hardware_profile()
+    defaults = choose_default_search_space(hardware_profile)
+
+    if args.max_length is None:
+        args.max_length = defaults["max_length"]
+    if args.learning_rates is None:
+        args.learning_rates = defaults["learning_rates"]
+    if args.batch_sizes is None:
+        args.batch_sizes = defaults["batch_sizes"]
+    if args.epochs is None:
+        args.epochs = defaults["epochs"]
+    if args.weight_decays is None:
+        args.weight_decays = defaults["weight_decays"]
+    if args.gradient_accumulation_steps is None:
+        args.gradient_accumulation_steps = defaults["gradient_accumulation_steps"]
+    if args.dataloader_num_workers is None:
+        args.dataloader_num_workers = defaults["dataloader_num_workers"]
+
+    print(
+        json.dumps(
+            {
+                "hardware_profile": {
+                    "has_gpu": hardware_profile.has_gpu,
+                    "cpu_logical": hardware_profile.cpu_logical,
+                    "ram_total_gb": hardware_profile.ram_total_gb,
+                    "ram_available_gb": hardware_profile.ram_available_gb,
+                },
+                "resolved_defaults": {
+                    "max_length": args.max_length,
+                    "learning_rates": args.learning_rates,
+                    "batch_sizes": args.batch_sizes,
+                    "epochs": args.epochs,
+                    "weight_decays": args.weight_decays,
+                    "gradient_accumulation_steps": args.gradient_accumulation_steps,
+                    "dataloader_num_workers": args.dataloader_num_workers,
+                },
+            },
+            indent=2,
+        )
+    )
 
     train_df, validation_df, test_df = load_splits()
     train_df = sample_split(train_df, args.max_train_samples)
@@ -341,42 +452,60 @@ def main() -> None:
     for learning_rate in args.learning_rates:
         for batch_size in args.batch_sizes:
             for epochs in args.epochs:
-                trial = TrialConfig(learning_rate=learning_rate, batch_size=batch_size, epochs=epochs)
-                if not args.force_retrain:
-                    saved_metrics = load_saved_trial_result(trial)
-                else:
-                    saved_metrics = None
+                for weight_decay in args.weight_decays:
+                    for gradient_accumulation_steps in args.gradient_accumulation_steps:
+                        trial = TrialConfig(
+                            learning_rate=learning_rate,
+                            batch_size=batch_size,
+                            epochs=epochs,
+                            weight_decay=weight_decay,
+                            gradient_accumulation_steps=gradient_accumulation_steps,
+                        )
+                        if not args.force_retrain:
+                            saved_metrics = load_saved_trial_result(trial)
+                        else:
+                            saved_metrics = None
 
-                if saved_metrics is not None:
-                    output_dir = Path(saved_metrics["model_dir"])
-                    metrics = saved_metrics
-                    print(f"Reusing saved RoBERTa artifact from {output_dir}")
-                else:
-                    metrics, output_dir = run_trial(
-                        trial=trial,
-                        train_dataset=train_dataset,
-                        validation_dataset=validation_dataset,
-                        class_weights=class_weights,
-                        max_length=args.max_length,
-                    )
+                        if saved_metrics is not None:
+                            output_dir = Path(saved_metrics["model_dir"])
+                            metrics = saved_metrics
+                            print(f"Reusing saved RoBERTa artifact from {output_dir}")
+                        else:
+                            metrics, output_dir = run_trial(
+                                trial=trial,
+                                train_dataset=train_dataset,
+                                validation_dataset=validation_dataset,
+                                class_weights=class_weights,
+                                max_length=args.max_length,
+                                early_stopping_patience=args.early_stopping_patience,
+                                dataloader_num_workers=args.dataloader_num_workers,
+                            )
 
-                validation_f1 = float(metrics["eval_f1_score"])
-                trial_results.append(
-                    {
-                        "learning_rate": learning_rate,
-                        "batch_size": batch_size,
-                        "epochs": epochs,
-                        "eval_accuracy": float(metrics["eval_accuracy"]),
-                        "eval_precision": float(metrics["eval_precision"]),
-                        "eval_recall": float(metrics["eval_recall"]),
-                        "eval_f1_score": validation_f1,
-                        "model_dir": str(output_dir),
-                    }
-                )
-                if validation_f1 > best_f1:
-                    best_f1 = validation_f1
-                    best_dir = output_dir
-                    best_trial = {"learning_rate": learning_rate, "batch_size": batch_size, "epochs": epochs}
+                        validation_f1 = float(metrics["eval_f1_score"])
+                        trial_results.append(
+                            {
+                                "learning_rate": learning_rate,
+                                "batch_size": batch_size,
+                                "epochs": epochs,
+                                "weight_decay": weight_decay,
+                                "gradient_accumulation_steps": gradient_accumulation_steps,
+                                "eval_accuracy": float(metrics["eval_accuracy"]),
+                                "eval_precision": float(metrics["eval_precision"]),
+                                "eval_recall": float(metrics["eval_recall"]),
+                                "eval_f1_score": validation_f1,
+                                "model_dir": str(output_dir),
+                            }
+                        )
+                        if validation_f1 > best_f1:
+                            best_f1 = validation_f1
+                            best_dir = output_dir
+                            best_trial = {
+                                "learning_rate": learning_rate,
+                                "batch_size": batch_size,
+                                "epochs": epochs,
+                                "weight_decay": weight_decay,
+                                "gradient_accumulation_steps": gradient_accumulation_steps,
+                            }
 
     if best_dir is None or best_trial is None:
         raise RuntimeError("No RoBERTa trial completed successfully.")
