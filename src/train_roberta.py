@@ -82,6 +82,18 @@ class WeightedLossTrainer(Trainer):
         )
         return (loss, outputs) if return_outputs else loss
 
+    def collect_dataset_metrics(self, eval_dataset: Dataset, metric_key_prefix: str) -> dict[str, float]:
+        eval_dataloader = self.get_eval_dataloader(eval_dataset)
+        eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
+        output = eval_loop(
+            eval_dataloader,
+            description=f"{metric_key_prefix.title()} metrics",
+            prediction_loss_only=False,
+            ignore_keys=None,
+            metric_key_prefix=metric_key_prefix,
+        )
+        return output.metrics
+
 
 class TrainMetricsCallback(TrainerCallback):
     def __init__(self, train_dataset: Dataset):
@@ -94,7 +106,7 @@ class TrainMetricsCallback(TrainerCallback):
     def on_epoch_end(self, args, state, control, **kwargs):
         if self.trainer is None:
             return control
-        train_metrics = self.trainer.evaluate(eval_dataset=self.train_dataset, metric_key_prefix="train")
+        train_metrics = self.trainer.collect_dataset_metrics(self.train_dataset, metric_key_prefix="train")
         train_metrics["epoch"] = state.epoch
         self.trainer.log(train_metrics)
         return control
