@@ -110,6 +110,25 @@ $env:PYTHONPATH = (Resolve-Path .python_packages).Path
 python -m streamlit run app.py
 ```
 
+## Google Colab T4 Training
+
+If you want to retrain the full project on a GPU and refresh every report, use the notebook at `notebooks/google_colab_t4_training.ipynb`.
+
+The updated Colab flow is designed to:
+
+- preprocess the dataset from scratch
+- retrain the classical ML baselines
+- run a T4-oriented RoBERTa sweep with accuracy-based model selection
+- regenerate richer evaluation outputs such as normalized confusion matrices, ROC curves, precision-recall curves, per-class metric charts, confidence analysis plots, and updated comparison dashboards
+
+The main training commands used in Colab are:
+
+```bash
+python -m src.preprocessing
+python -m src.train_ml --force-retrain --n-jobs 2
+python -m src.train_roberta --colab-t4-profile --force-retrain --selection-metric accuracy
+```
+
 ## 🔍 Methodology / Workflow
 
 1. **Data Collection**  
@@ -134,7 +153,7 @@ python -m streamlit run app.py
    Multiple classical ML models are trained and compared, followed by fine-tuning of RoBERTa for sequence classification.
 
 7. **Model Evaluation**  
-   Accuracy, precision, recall, F1-score, confusion matrices, and comparison charts are used to measure performance.
+   Accuracy, balanced accuracy, weighted and macro F1, MCC, ROC-AUC, average precision, confusion matrices, calibration-style confidence analysis, and comparison dashboards are used to measure performance.
 
 8. **Prediction**  
    Saved model artifacts are loaded by the Streamlit app, so the system can make predictions without retraining every time.

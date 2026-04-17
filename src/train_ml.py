@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 
 import joblib
+import numpy as np
 import pandas as pd
 from sklearn.pipeline import Pipeline
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -12,7 +13,18 @@ from sklearn.naive_bayes import ComplementNB
 from sklearn.svm import LinearSVC
 
 from src.config import ID_TO_LABEL, MODELS_DIR, PROCESSED_DIR, REPORTS_DIR, SEED, ensure_directories, set_seed
-from src.evaluate import compute_metrics, plot_confusion_matrix, plot_model_comparison, save_classification_report
+from src.evaluate import (
+    compute_metrics,
+    plot_classification_report_bars,
+    plot_confusion_matrix,
+    plot_metric_dashboard,
+    plot_model_comparison,
+    plot_precision_recall_curves,
+    plot_prediction_confidence,
+    plot_roc_curves,
+    save_classification_report,
+    save_prediction_details,
+)
 from src.utils import load_json, save_json
 
 
@@ -42,6 +54,32 @@ MODEL_SPECS = {
         },
     },
 }
+
+
+def scores_to_probabilities(scores: np.ndarray) -> np.ndarray:
+    score_matrix = np.asarray(scores, dtype=float)
+    if score_matrix.ndim == 1:
+        score_matrix = np.column_stack([-score_matrix, score_matrix])
+    score_matrix = score_matrix - score_matrix.max(axis=1, keepdims=True)
+    exp_scores = np.exp(score_matrix)
+    return exp_scores / exp_scores.sum(axis=1, keepdims=True)
+
+
+def get_prediction_probabilities(model, texts: pd.Series, ordered_labels: list[int]) -> np.ndarray | None:
+    if hasattr(model, "predict_proba"):
+        probabilities = np.asarray(model.predict_proba(texts), dtype=float)
+    elif hasattr(model, "decision_function"):
+        probabilities = scores_to_probabilities(model.decision_function(texts))
+    else:
+        return None
+
+    model_labels = list(getattr(model, "classes_", ordered_labels))
+    if probabilities.ndim == 1:
+        probabilities = np.column_stack([1.0 - probabilities, probabilities])
+    if model_labels != ordered_labels:
+        label_to_index = {label: idx for idx, label in enumerate(model_labels)}
+        probabilities = probabilities[:, [label_to_index[label] for label in ordered_labels]]
+    return probabilities
 
 
 def load_splits() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -85,20 +123,29 @@ def run_grid_search(model_name: str, train_df: pd.DataFrame, validation_df: pd.D
 def evaluate_and_save(model_name: str, model, test_df: pd.DataFrame) -> dict[str, float | str]:
     y_true = test_df["label_id"]
     y_pred = model.predict(test_df["clean_text"])
-    metrics = compute_metrics(y_true, y_pred)
+    ordered_labels = sorted(ID_TO_LABEL)
+    label_names = [ID_TO_LABEL[idx] for idx in ordered_labels]
+    probabilities = get_prediction_probabilities(model, test_df["clean_text"], ordered_labels)
+    metrics = compute_metrics(y_true, y_pred, probabilities=probabilities, labels=ordered_labels)
 
     model_dir = MODELS_DIR / "ml" / model_name
     model_dir.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, model_dir / "pipeline.joblib")
     save_json(metrics, model_dir / "metrics.json")
 
-    ordered_labels = sorted(ID_TO_LABEL)
-    label_names = [ID_TO_LABEL[idx] for idx in ordered_labels]
-    save_classification_report(
+    report_df = save_classification_report(
         y_true,
         y_pred,
         label_names=label_names,
         output_path=REPORTS_DIR / f"{model_name}_classification_report.csv",
+    )
+    save_prediction_details(
+        y_true,
+        y_pred,
+        labels=ordered_labels,
+        label_names=label_names,
+        probabilities=probabilities,
+        output_path=REPORTS_DIR / f"{model_name}_predictions.csv",
     )
     plot_confusion_matrix(
         y_true,
@@ -107,6 +154,36 @@ def evaluate_and_save(model_name: str, model, test_df: pd.DataFrame) -> dict[str
         label_names=label_names,
         filename=f"{model_name}_confusion_matrix.png",
     )
+    plot_confusion_matrix(
+        y_true,
+        y_pred,
+        labels=ordered_labels,
+        label_names=label_names,
+        filename=f"{model_name}_normalized_confusion_matrix.png",
+        normalize=True,
+    )
+    plot_classification_report_bars(report_df, label_names=label_names, filename=f"{model_name}_per_class_metrics.png")
+    if probabilities is not None:
+        plot_roc_curves(
+            y_true,
+            probabilities=probabilities,
+            labels=ordered_labels,
+            label_names=label_names,
+            filename=f"{model_name}_roc_curves.png",
+        )
+        plot_precision_recall_curves(
+            y_true,
+            probabilities=probabilities,
+            labels=ordered_labels,
+            label_names=label_names,
+            filename=f"{model_name}_precision_recall_curves.png",
+        )
+        plot_prediction_confidence(
+            y_true,
+            y_pred,
+            probabilities=probabilities,
+            filename=f"{model_name}_confidence_analysis.png",
+        )
     return {"model": model_name, **metrics}
 
 
@@ -155,6 +232,9 @@ def main() -> None:
     results_df = pd.DataFrame(all_results)
     results_df.to_csv(REPORTS_DIR / "ml_model_comparison.csv", index=False)
     plot_model_comparison(results_df, metric="f1_score", filename="ml_model_comparison.png")
+    plot_model_comparison(results_df, metric="accuracy", filename="ml_model_accuracy_comparison.png")
+    plot_model_comparison(results_df, metric="f1_macro", filename="ml_model_macro_f1_comparison.png")
+    plot_metric_dashboard(results_df, filename="ml_metric_dashboard.png")
     existing_summary_path = REPORTS_DIR / "ml_grid_search_summary.json"
     existing_summary = load_json(existing_summary_path) if existing_summary_path.exists() else {}
     existing_summary.update(best_summary)
